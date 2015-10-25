@@ -1,0 +1,269 @@
+---
+title: "Machine Learning Project"
+date: "October 15, 2015"
+output: html_document
+---
+```{r setup, include=FALSE, echo=FALSE}
+#Turn off loading messages globally. 
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+##Synopsis
+The data collected from personal monitoring devices like fitbit, which are used to monitor physical activity is used for this project. The goal of this project is to build a machine learning algorithm that can correctly predict the classe variable which denotes the manner in which the exercises were done, denoted by these 5 classifiers - A,B,C,D,E. 
+
+##Data
+A training data set and a testing data set are provided. We will take the training set and further partition it to create a training data subset to build the model and a test data subset with which to validate each model’s accuracy. We will then run the final model selected against the test set that was originally provided. 
+
+####Data loading
+```{r }
+#Load the necessary libraries
+library(caret)
+library(kernlab)
+library(randomForest)
+library(doMC)
+library(rattle)
+#for parallel processing
+registerDoMC(cores = 8)
+
+download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",destfile="pml-training.csv",method="curl")
+download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",destfile="pml-testing.csv",method="curl")
+
+#the training and test data are read into data frames.
+traindf <- read.csv("pml-training.csv", header=TRUE)
+testdf <- read.csv("pml-testing.csv", header=TRUE)
+```
+
+##Exploratory Analysis
+An initial exploration of the data is done to analyze the feature set available for building the model. There are 160 predictor variables including the response variable 'classe'. 
+
+```{r}
+dim(traindf)
+table(traindf$classe)
+```
+
+A summary of the data shows that there a lot of variables that are NA or blank. Also since we are interested only in a specific set of exercises, only variables relating to those need to be used. We will remove all others from the data set. 
+
+##Feature Selection  
+Variables that are of no value in building this model are removed.
+```{r }
+#set all NA values to 0. The nearZeroVar in caret does not tag NA columns as near zero var so by changing them to 0 the variability remains the same but the function becomes effective. 
+traindf[is.na(traindf)] <- 0
+#nearZeorVar identifies all variables that have little variance and hence of no value for a model
+nzv <- nearZeroVar(traindf)
+# remove the near zero variables from the data sets
+traindf <- traindf[,-nzv]
+#remove columns that are not related to the exercises of interest and add the response variable - classe
+traindf <- traindf[,c(59,grep("(belt|forearm|arm|dumbell)", names(traindf)))]
+```
+
+Now we have a data set with the response variable - classe - and 39 numeric predictors.  
+
+##Partition data
+We will now partition the training set provided into a training and validation subset to build and validate the various models.  
+```{r }
+set.seed(3433)
+#the data is split with 60% in the model training set and the rest in the validation set
+trainidx <- createDataPartition(y=traindf$classe,p=0.60,list=FALSE)
+#training set
+train2df <- traindf[trainidx,]
+#validation set
+valdf <- traindf[-trainidx,]
+```
+
+##Build models
+This is how we will approach finding the optimal model. We will build several models using various machine learning algorithms and evaluate each by testing their prediction on the validation data set. We will then choose the best one based on prediction accuracy and error rates. This is the model that we will use for a one-time evaluation of the test set that was provided for evaluation purposes. 
+
+###Model – Decision Tree
+The first model we will fit is a decision tree. Decision trees are easy to build and understand. However they don't perform as well as some of the other techniques. But lets see what we can achieve.
+
+```{r }
+#Fit the tree model using the train function in caret
+modFitDT <- train(classe~.,method="rpart", data=train2df)
+```
+
+Here's what the tree looks like. If you notice, class B and D are not in the tree.
+```{r}
+#plot the tree
+fancyRpartPlot(modFitDT$finalModel)
+```
+
+***Cross Validation***
+Validate this on our test subset.
+```{r}
+#predict on the test set
+valPredDT <- predict(modFitDT,newdata=valdf)
+```
+
+This is how the model performed. 
+```{r }
+#compare the predictions to the known actuals
+cm <- confusionMatrix(valdf$classe,valPredDT)
+cm$table
+cm$overall["Accuracy"]
+```
+***Estimated Out of Sample Error***
+```{r}
+#OOS error
+mean(valPredDT != valdf$classe)
+```
+
+***Sensitivity*** - This is the sensitivity of predictions by class - a measure of how good the positive predictions were.  
+```{r}
+cm$byClass[,1]
+```
+
+***Specificity*** - This is the specificity of predictions by class - a measure of how good the negative predictions were.  
+```{r}
+cm$byClass[,2]
+```
+
+As you can see from the crosstab of actual to predicted, this model did a very poor job. As we saw earlier in the tree plot, some of the classes did not have predictions at all and others had all the predictions. And the overall accuracy rate is just 43%. 
+
+I am sure with more tuning of predictors, we can get a better decison tree, but lets try other techniques. 
+
+###Model – Bootstrap Aggregation(Bagging)
+This technique tries to improve on some of the decision tree's key shortcomings - overfitting. Because the decision tree uses the entire set and fits a model that is close to what is in the data, it often is not a very general model that can preform well on other data sets.  Bagging tries to solve this by breaking down the training data into smaller samples(boot strapping) and generating many trees which are then averaged to build a model that is more versatile. 
+
+```{r eval=FALSE}
+#Fit the tree model using the train function in caret
+modFitTB <- train(classe~.,method="treebag", data=train2df)
+```
+```{r echo=FALSE}
+modFitTB <- readRDS("modbag.rds")
+```
+
+***Cross Validation***
+Validate this on our test subset.
+```{r}
+#predict on the test set
+valPredTB <- predict(modFitTB,newdata=valdf)
+```
+
+This is how well the model performed. 
+```{r }
+#compare the predictions to the known actuals
+cm <- confusionMatrix(valdf$classe,valPredTB)
+cm$table
+cm$overall["Accuracy"]
+```
+***Estimated Out of Sample Error***
+```{r}
+#OOS error
+mean(valPredTB != valdf$classe)
+```
+98% accuracy in prediction. A substantial improvement over the first model and close to a perfect prediction. Only a handful of misclassifications. 
+
+***Sensitivity*** - This is the sensitivity of predictions by class - a measure of how good the positive predictions were.  
+```{r}
+cm$byClass[,1]
+```
+
+***Specificity*** - This is the specificity of predictions by class - a measure of how good the negative predictions were.  
+```{r}
+cm$byClass[,2]
+```
+
+We could stop here because this model has performed so well. But lets see if we can improve on it.
+
+###Model – Random Forest
+
+Next we try Random Forest, another tree based algorithm. Random Forests take resampling one step further than bagging. Along with creating sub samples of observations, it also uses only a few of the predictors in each sample which are then averaged. This helps even more in randomizing and regularizing the samples.    
+
+```{r eval=FALSE}
+#Fit the tree model using the train function in caret
+modFitRF <- train(classe~.,method="rf", data=train2df)
+```
+```{r echo=FALSE}
+modFitRF <- readRDS("modfitrf2.rds")
+```
+
+***Cross Validation***
+Validate this on our test subset.
+```{r}
+#predict on the test set
+valPredRF <- predict(modFitRF,newdata=valdf)
+```
+
+This is how well the model performed. 
+```{r }
+#compare the predictions to the known actuals
+cm <- confusionMatrix(valdf$classe,valPredRF)
+cm$table
+cm$overall["Accuracy"]
+```
+***Estimated Out of Sample Error***
+```{r}
+#OOS error
+mean(valPredRF != valdf$classe)
+```
+Almost 99% accuracy! A marginal improvement on the bagging method. But for all practical purposes they should perform equally well. 
+
+***Sensitivity*** - This is the sensitivity of predictions by class - a measure of how well the positive predictions were.  
+```{r}
+cm$byClass[,1]
+```
+
+***Specificity*** - This is the specificity of predictions by class - a measure of how well the negative predictions were.  
+```{r}
+cm$byClass[,2]
+```
+We will try one more important tree based model to see how it performs in this situation. 
+
+###Model - Gradient Boosting
+Gradient boosting also resamples and builds many trees, but unlike the earlier models it does not average them. Instead it sequentially uses the earler trees to fit newer ones based on the errors(loss) observed.   
+```{r eval=FALSE }
+#Fit the tree model using the train function in caret
+modFitGB <- train(classe~.,method="gbm", data=train2df)
+```
+```{r echo=FALSE}
+modFitGB <- readRDS("modfitgbm.rds")
+```
+
+***Cross Validation***
+Validate this on our test subset.
+```{r}
+#predict on the test set
+valPredGB <- predict(modFitGB,newdata=valdf)
+```
+
+This is how well the model performed. 
+```{r }
+#compare the predictions to the known actuals
+cm <- confusionMatrix(valdf$classe,valPredGB)
+cm$table
+cm$overall["Accuracy"]
+```
+***Estimated Out of Sample Error***
+```{r}
+#OOS error
+mean(valPredGB != valdf$classe)
+```
+The boosting accuracy is only about 93%. Not quite as good as bagging or random forests. It is possible to tweak and tune the parameters to fit a better model, but for now we will not pursue that.
+
+***Sensitivity*** - This is the sensitivity of predictions by class - a measure of how well the positive predictions were.  
+```{r}
+cm$byClass[,1]
+```
+
+***Specificity*** - This is the specificity of predictions by class - a measure of how well the negative predictions were.  
+```{r}
+cm$byClass[,2]
+```
+
+##Conclusion
+Random Forest and Bagging provided the most accurate models of the various ones we tried. Random Forest was slighlty better than bagging and also provided a much leaner model. So that is the one we will use for the test submission. 
+
+###Random Forest model analysis
+Here is a closer look at the final model that we chose as the best performer. 500 trees were built from repeated sampling of 6 predictors in each iteration. Looking at the error rates for the number of trees created it seems that at about 200 trees the optimal accuracy was reached and the error rates were down to its lowest level. Beyond that it doesn't improve the accuracy much as more trees are created.
+
+```{r}
+plot(modFitRF, main = "Error rate at different tree levels")
+```
+
+###Prediction on test data provided
+Now we use the Random Forest model to make the prediction on the test set provided. 
+```{r}
+predict(modFitRF,newdata=testdf)
+```
+This achieved 100% accuracy on the 20 cases.
